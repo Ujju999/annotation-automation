@@ -1,0 +1,142 @@
+"""Label Studio ML backend entry point — YOLO (known) + SAM3 (unknown) hybrid.
+
+This is the module the Label Studio ML SDK loads (referenced by _wsgi.py).
+It maps to the "server.py" role described in plan.md Phase 5.
+
+Detection MVP: known classes -> YOLO boxes, unknown classes -> SAM3 boxes (via
+bounding_box). Segmentation (PolygonLabels / BrushLabels) is additive later — the
+converter already routes geometry by control tag.
+"""
+import hashlib
+import logging
+import os
+
+import numpy as np
+import PIL.Image
+
+# Load .env early so LABEL_STUDIO_URL / LABEL_STUDIO_API_KEY / YOLO_MODEL_PATH etc. are
+# available before any os.getenv() below. Optional dependency — no-op if not installed.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    pass
+
+from label_studio_ml.model import LabelStudioMLBase
+
+from backend.converters import detection_to_result
+from backend.device import get_device
+from backend.model_sam3 import Sam3Session
+from backend.model_yolo import YoloSession
+from backend.routing import SUPPORTED, build_routes, controls_for, labels_for
+
+logger = logging.getLogger(__name__)
+
+# Load heavy models once per process, regardless of how the SDK instantiates the
+# backend class (it may construct one per request).
+_SESSIONS: dict = {}
+
+
+def _get_sessions() -> dict:
+    if not _SESSIONS:
+        _SESSIONS["sam3"] = Sam3Session(
+            model_name=os.getenv("OSAM_MODEL", "sam3"),
+            cache_size=int(os.getenv("EMBEDDING_CACHE_SIZE", "10")),
+        )
+        # YOLO is OPTIONAL. With no model file, every label is "unknown" and routes
+        # to SAM3 (open-vocab text prompts) — so you can annotate without training.
+        model_path = os.getenv("YOLO_MODEL_PATH", "").strip()
+        if model_path and os.path.exists(model_path):
+            _SESSIONS["yolo"] = YoloSession(
+                model_path=model_path,
+                device=get_device(),
+                task=os.getenv("YOLO_TASK", "detect"),
+            )
+            _SESSIONS["yolo_classes"] = set(_SESSIONS["yolo"].class_names.values())
+        else:
+            _SESSIONS["yolo"] = None
+            _SESSIONS["yolo_classes"] = set()
+            logger.warning(
+                "No YOLO model at YOLO_MODEL_PATH=%r — running SAM3-only; all labels "
+                "are routed to open-vocab text prompts.", model_path,
+            )
+    return _SESSIONS
+
+
+class AnnotationBackend(LabelStudioMLBase):
+
+    def setup(self):
+        self.set("model_version", os.getenv("MODEL_VERSION", "yolo+sam3-v1"))
+
+    def predict(self, tasks, context=None, **kwargs):
+        sessions = _get_sessions()
+        routes = build_routes(self.parsed_label_config, sessions["yolo_classes"])
+        yolo_labels = labels_for(routes, "yolo")
+        sam3_labels = labels_for(routes, "sam3")
+
+        yolo_conf = float(os.getenv("YOLO_SCORE_THRESHOLD", "0.3"))
+        sam3_conf = float(os.getenv("SAM3_SCORE_THRESHOLD", "0.1"))
+        iou = float(os.getenv("IOU_THRESHOLD", "0.5"))
+        max_det = int(os.getenv("MAX_DETECTIONS", "100"))
+        model_version = self.get("model_version") or os.getenv("MODEL_VERSION", "yolo+sam3-v1")
+
+        predictions = []
+        for task in tasks:
+            image_pil = self._load_image(task)
+            W, H = image_pil.size
+
+            dets = []
+            if yolo_labels and sessions["yolo"] is not None:
+                dets += sessions["yolo"].predict(image_pil, yolo_labels, yolo_conf, iou)
+            if sam3_labels:
+                image_np = np.asarray(image_pil)
+                dets += sessions["sam3"].predict(
+                    image_np, self._image_id(task), sam3_labels, sam3_conf, iou, max_det)
+
+            results = [detection_to_result(d, c, W, H)
+                       for d in dets for c in controls_for(routes, d.label)]
+            score = sum(r["score"] for r in results) / len(results) if results else 0.0
+            predictions.append({
+                "model_version": model_version,
+                "result": results,
+                "score": score,
+            })
+        return predictions
+
+    # --- helpers -----------------------------------------------------------
+
+    def _image_value_key(self) -> str:
+        """Data key of the <Image> object tag (e.g. 'image' from value='$image')."""
+        for info in self.parsed_label_config.values():
+            if info.get("type") in SUPPORTED:
+                for inp in info.get("inputs", []):
+                    if inp.get("type") == "Image":
+                        return inp["value"]
+        return "image"
+
+    def _load_image(self, task) -> "PIL.Image.Image":
+        url = task["data"][self._image_value_key()]
+        try:
+            path = self.get_local_path(url, task_id=task.get("id"))  # auth-aware (LS-hosted)
+        except Exception as exc:  # plain public URL not served by LS
+            logger.debug("get_local_path failed (%s); downloading directly", exc)
+            path = self._download(url)
+        return PIL.Image.open(path).convert("RGB")
+
+    @staticmethod
+    def _download(url: str) -> str:
+        import tempfile
+
+        import requests
+
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".img")
+        tmp.write(resp.content)
+        tmp.close()
+        return tmp.name
+
+    def _image_id(self, task) -> str:
+        url = task["data"][self._image_value_key()]
+        return hashlib.sha256(url.encode()).hexdigest()

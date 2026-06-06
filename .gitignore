@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# Virtual envs
+.venv/
+venv/
+
+# Env / secrets
+.env
+
+# Model weights (keep these out of git)
+*.pt
+*.onnx
+*.onnx.data
+
+# OS
+.DS_Store

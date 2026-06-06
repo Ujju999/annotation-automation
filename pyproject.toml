@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ls-ml-backend"
+
+version = "0.1.0"
+description = "YOLO (N classes) + SAM3 hybrid Label Studio ML backend"
+requires-python = ">=3.11"   # onnxruntime (osam dep) dropped 3.10 wheels at 1.24
+dependencies = [
+    # Modern HumanSignal SDK from git — PyPI "label-studio-ml" is the abandoned legacy
+    # fork (1.0.9, Flask 1.1.2, imports redis). This one is v2.x, Flask>2.3, no redis.
+    "label-studio-ml @ git+https://github.com/HumanSignal/label-studio-ml-backend.git",
+    "osam>=0.4.0",            # SAM3 open-vocab text prompts (pulls in onnxruntime, CPU)
+    "ultralytics>=8.0",       # YOLO load + inference (uses torch device)
+    "numpy>=1.24",
+    "pillow>=10.0",
+    "requests>=2.28",
+    "python-dotenv>=1.0",     # auto-load .env (Label Studio connection, model path, thresholds)
+    "scikit-image>=0.21",     # find_contours / approximate_polygon / draw.polygon (segmentation)
+    # "label-studio-converter",  # ADD for BrushLabels (segmentation phase): brush.mask2rle
+]
+
+# torch is installed separately so the right build (cuda / mps / cpu) is chosen:
+#   CUDA:    pip install torch --index-url https://download.pytorch.org/whl/cu121
+#   MPS/CPU: pip install torch
+# (ultralytics will otherwise pull a CPU torch from PyPI automatically.)
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[tool.setuptools]
+packages = ["backend"]
+py-modules = ["model", "_wsgi"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
