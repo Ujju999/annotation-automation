@@ -13,6 +13,7 @@ dependencies = [
     # fork (1.0.9, Flask 1.1.2, imports redis). This one is v2.x, Flask>2.3, no redis.
     "label-studio-ml @ git+https://github.com/HumanSignal/label-studio-ml-backend.git",
     "osam>=0.4.0",            # SAM3 open-vocab text prompts (pulls in onnxruntime, CPU)
+    "transformers>=4.51",     # Grounding DINO (default open-vocab backend); 4.51 = clean text_labels API
     "ultralytics>=8.0",       # YOLO load + inference (uses torch device)
     "numpy>=1.24",
     "pillow>=10.0",
