@@ -1,0 +1,16 @@
+# CPU-only / dev image.
+FROM python:3.11-slim
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY . /app
+RUN pip install --no-cache-dir .
+
+# The default open-vocab backend (Grounding DINO) downloads its weights from Hugging
+# Face on first request. Pre-bake them into the image for instant startup if desired.
+
+EXPOSE 9090
+CMD ["label-studio-ml", "start", ".", "-p", "9090"]

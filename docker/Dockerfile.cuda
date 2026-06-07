@@ -1,0 +1,23 @@
+# NVIDIA GPU image.
+# Based on python:3.11 (matches requires-python in pyproject.toml).
+# The cu121 torch wheels bundle the CUDA/cuDNN runtime libs, so no nvidia/cuda base
+# is needed — only the host NVIDIA driver + nvidia-container-toolkit (run with --gpus all).
+# Both YOLO and the default open-vocab backend (Grounding DINO) run on the GPU.
+FROM python:3.11-slim
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install the CUDA torch build BEFORE the package so ultralytics doesn't pull CPU torch.
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cu121
+
+WORKDIR /app
+COPY . /app
+RUN pip install --no-cache-dir .
+
+# The default open-vocab backend (Grounding DINO) downloads its weights from Hugging
+# Face on first request. Pre-bake them into the image for instant startup if desired.
+
+EXPOSE 9090
+CMD ["label-studio-ml", "start", ".", "-p", "9090"]
