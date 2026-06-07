@@ -33,9 +33,10 @@ _BACKENDS = {
     "gdino": lambda: _load("model_gdino", "GdinoSession"),
     "yolo_world": lambda: _load("model_yolo_world", "YoloWorldSession"),
     "grounded_sam2": lambda: _load("model_grounded_sam2", "GroundedSam2Session"),
-    # Legacy osam/SAM3 — kept as an opt-in backend (pip install ".[osam]").
+    # Native SAM2 backend (no osam dependency, CUDA/MPS/CPU).
     "sam3": lambda: _load("model_sam3", "Sam3Session"),
-    "osam": lambda: _load("model_sam3", "Sam3Session"),
+    # Legacy osam/SAM3 — CPU-only; requires pip install ".[osam]".
+    "osam": lambda: _load("model_sam3", "OsamSam3Session"),
 }
 
 DEFAULT_BACKEND = "gdino"
