@@ -46,7 +46,6 @@ _BACKENDS = {
     "gdino": lambda: _load("model_gdino", "GdinoSession"),
     "yolo_world": lambda: _load("model_yolo_world", "YoloWorldSession"),
     "grounded_sam2": lambda: _load("model_grounded_sam2", "GroundedSam2Session"),
-    "florence2": lambda: _load("model_florence2", "Florence2Session"),
     # Legacy osam/SAM3 — kept as an opt-in backend (pip install ".[osam]").
     "sam3": lambda: _load("model_sam3", "Sam3Session"),
     "osam": lambda: _load("model_sam3", "Sam3Session"),
