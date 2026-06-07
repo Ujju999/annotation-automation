@@ -38,11 +38,15 @@ class YoloWorldSession(OpenVocabSession):
             max_det=max_detections, verbose=False,
         )[0]
 
-        names = result.names  # {0: "drone", ...} — the set_classes vocabulary
+        # The set_classes vocabulary. Ultralytics (8.4.x) returns this as a dict
+        # {0: "drone", ...} on the first image but a plain list ["drone", ...] on
+        # every later one, so normalise to indexed access that works for both.
+        names = result.names
         dets: List[Detection] = []
         for i in range(len(result.boxes)):
             cls_idx = int(result.boxes.cls[i])
-            label = names.get(cls_idx)
+            label = names.get(cls_idx) if isinstance(names, dict) else (
+                names[cls_idx] if 0 <= cls_idx < len(names) else None)
             if label is None:
                 continue
             x1, y1, x2, y2 = result.boxes.xyxy[i].tolist()

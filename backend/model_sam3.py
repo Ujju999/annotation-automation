@@ -14,11 +14,24 @@ logger = logging.getLogger(__name__)
 
 
 def _full_mask(ann, W: int, H: int) -> np.ndarray:
-    """osam returns a bbox-sized mask; place it into a full-image canvas."""
-    bb = ann.bounding_box
+    """osam returns a bbox-sized mask placed at the box origin; copy the part that
+    lands inside the image onto a full-size canvas.
+
+    osam boxes can extend past the image edges (negative origin, or beyond W/H),
+    so intersect the mask with the canvas on both sides before copying — a naive
+    ``full[ymin:ymax] = mask`` either broadcast-errors or wraps a negative index.
+    """
     full = np.zeros((H, W), dtype=bool)
-    if ann.mask is not None and bb is not None:
-        full[bb.ymin:bb.ymax + 1, bb.xmin:bb.xmax + 1] = ann.mask
+    bb, mask = ann.bounding_box, ann.mask
+    if mask is None or bb is None:
+        return full
+    mh, mw = mask.shape[:2]
+    sy, sx = max(0, -bb.ymin), max(0, -bb.xmin)   # mask rows/cols off the top/left edge
+    dy, dx = max(0, bb.ymin), max(0, bb.xmin)     # canvas top-left, clamped to >= 0
+    h = min(mh - sy, H - dy)
+    w = min(mw - sx, W - dx)
+    if h > 0 and w > 0:
+        full[dy:dy + h, dx:dx + w] = mask[sy:sy + h, sx:sx + w]
     return full
 
 
@@ -67,7 +80,11 @@ class Sam3Session(OpenVocabSession):
                 req = osam.types.GenerateRequest(
                     model=self.model_name, image=image_np, prompt=prompt)
 
-            resp = osam.apis.generate(request=req)
+            try:
+                resp = osam.apis.generate(request=req)
+            except Exception as exc:
+                logger.warning("SAM3 generate failed for label '%s': %s", label, exc)
+                continue
 
             if emb is None:                          # first call returns the embedding
                 emb = resp.image_embedding
@@ -77,10 +94,13 @@ class Sam3Session(OpenVocabSession):
                 if ann.bounding_box is None:
                     continue
                 bb = ann.bounding_box
+                # osam can return coords past the image edges; clamp so the LS region
+                # stays within [0, W] x [0, H].
                 dets.append(Detection(
                     label=label,
                     score=float(ann.score or 0.0),
-                    bbox=(bb.xmin, bb.ymin, bb.xmax, bb.ymax),
+                    bbox=(max(0, min(bb.xmin, W)), max(0, min(bb.ymin, H)),
+                          max(0, min(bb.xmax, W)), max(0, min(bb.ymax, H))),
                     mask=_full_mask(ann, W, H),
                 ))
         return dets
