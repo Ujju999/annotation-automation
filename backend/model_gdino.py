@@ -1,14 +1,3 @@
-"""Grounding DINO open-vocab backend — GPU-native, text-prompted detection.
-
-The default open-vocab engine. Unlike osam/SAM3 (CPU-only ONNX), Grounding DINO runs on
-the autodetected torch device (cuda/mps/cpu) and takes ALL labels in a single forward
-pass ("drone. person. car."), so it is far faster than one-call-per-label SAM3.
-
-Boxes only (no masks). For masks, see model_grounded_sam2 (GDINO boxes + SAM 2).
-
-transformers is imported lazily inside __init__/predict so importing this module stays
-cheap; the heavy import only happens when the backend is actually constructed.
-"""
 from __future__ import annotations
 
 from typing import List, Optional

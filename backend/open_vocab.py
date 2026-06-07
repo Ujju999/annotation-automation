@@ -1,16 +1,3 @@
-"""Pluggable open-vocabulary detection backends.
-
-The open-vocab engine handles labels the trained YOLO model doesn't know, using text
-prompts ("drone", "person", ...). Each backend wraps a model — Grounding DINO,
-YOLO-World, Grounded SAM 2, Florence-2, or the legacy osam/SAM3 — behind one interface,
-so model.py can swap them via the OPEN_VOCAB_BACKEND env var.
-
-Backends emit the shared Detection type (converters.Detection); routing and the Label
-Studio converters stay backend-agnostic.
-
-Every backend is imported LAZILY, only when selected (see ``_BACKENDS``), so optional
-heavy deps (transformers, sam2, osam) are not required unless that backend is used.
-"""
 from __future__ import annotations
 
 import importlib

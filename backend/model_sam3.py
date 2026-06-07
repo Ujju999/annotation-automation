@@ -1,17 +1,3 @@
-"""Legacy osam/SAM3 open-vocab backend (opt-in: pip install ".[osam]").
-
-Kept for compatibility and its masks-capable path, but no longer the default — osam 0.4.x
-runs SAM3 on ONNXRuntime CPU only (no GPU), so it is the slow path. Prefer the gdino /
-yolo_world / grounded_sam2 / florence2 backends for GPU.
-
-osam 0.4.0 reality this is built around:
-  * SAM3 uses only prompt.texts[0]  -> one generate() call per label.
-  * GenerateResponse returns image_embedding -> encode once, reuse across labels.
-  * Annotation.mask is bbox-sized -> placed into a full-image canvas (segmentation phase).
-
-osam is imported lazily so this module (and the factory that references it) loads even when
-osam isn't installed; construction raises a clear install hint if it's missing.
-"""
 from __future__ import annotations
 
 import collections

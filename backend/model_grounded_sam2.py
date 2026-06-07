@@ -1,16 +1,3 @@
-"""Grounded SAM 2 open-vocab backend — boxes + masks, GPU-native.
-
-Composes two models, both provided by the already-core ``transformers`` (no git install):
-  1. Grounding DINO (via GdinoSession) detects boxes for the text labels.
-  2. SAM 2 (Sam2Model) turns each box into a precise segmentation mask.
-
-The result Detections carry a full-image mask, so a PolygonLabels control renders real
-polygons (the converter extracts a contour); a RectangleLabels control still renders the
-box. This is the highest-quality backend; also the heaviest to load.
-
-The SAM 2 checkpoint is chosen by SAM2_MODEL_ID (default below). transformers/torch are
-imported lazily.
-"""
 from __future__ import annotations
 
 import os

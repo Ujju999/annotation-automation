@@ -1,7 +1,3 @@
-"""Control-tag-aware routing: map each project label to its control tag and engine.
-
-Pure standard-library module (no torch/ultralytics/osam) so it stays unit-testable.
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass

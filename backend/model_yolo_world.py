@@ -1,16 +1,3 @@
-"""YOLO-World open-vocab backend — text-prompted detection via ultralytics.
-
-The fastest open-vocab option. ultralytics is already core, but YOLO-World's set_classes
-needs CLIP for the text encoder, so this backend is an opt-in extra: pip install
-".[yolo_world]". The requested labels become the model's class vocabulary (set_classes),
-then a single GPU forward pass returns boxes. Boxes only (no masks).
-
-This is the UNKNOWN-class engine; it is independent of the trained-YOLO (known-class)
-engine in model_yolo.py, which is left untouched.
-
-The weights file is chosen by the YOLO_WORLD_MODEL env var (default below) and downloads
-from the ultralytics assets on first use. ultralytics is imported lazily.
-"""
 from __future__ import annotations
 
 import importlib.util

@@ -1,12 +1,3 @@
-"""Normalized detections -> Label Studio prediction JSON.
-
-Geometry follows the CONTROL TAG type, not the model:
-  * RectangleLabels -> box          (detection MVP)
-  * PolygonLabels   -> mask contour, with a bbox->polygon fallback (segmentation phase)
-
-Heavy deps (numpy/skimage) are imported lazily inside the polygon path so this module
-— and the converter unit tests — load with only the standard library.
-"""
 from __future__ import annotations
 
 import uuid

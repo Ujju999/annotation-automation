@@ -1,4 +1,3 @@
-"""Torch device auto-detection. Applies to YOLO only — SAM3 runs on ONNXRuntime (CPU)."""
 import logging
 
 import torch

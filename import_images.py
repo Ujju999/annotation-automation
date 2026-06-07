@@ -1,14 +1,3 @@
-#!/usr/bin/env python3
-"""
-CLI — Create a Label Studio project, upload images, run YOLO + open-vocab predictions,
-and push bounding-box pre-annotations so annotators only need to review.
-
-Usage:
-    python import_images.py --images /path/to/folder
-    python import_images.py --images /path/to/folder --project "Drone v2" --yolo best.pt
-
-Reads LABEL_STUDIO_URL and LABEL_STUDIO_API_KEY from .env (auto-loaded).
-"""
 from __future__ import annotations
 
 import argparse
@@ -37,10 +26,6 @@ logging.basicConfig(level=logging.WARNING, format="%(message)s")
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff", ".tif"}
 
 
-# ---------------------------------------------------------------------------
-# Interactive class selection
-# ---------------------------------------------------------------------------
-
 def prompt_classes(yolo_path: Optional[str]) -> tuple[list[str], list[str]]:
     """Ask the user which classes to annotate.  Returns (yolo_classes, ov_classes)."""
     yolo_classes: list[str] = []
@@ -67,10 +52,6 @@ def prompt_classes(yolo_path: Optional[str]) -> tuple[list[str], list[str]]:
     return yolo_classes, ov_extra
 
 
-# ---------------------------------------------------------------------------
-# Label config builder
-# ---------------------------------------------------------------------------
-
 def build_label_config(yolo_classes: list[str], ov_classes: list[str]) -> str:
     all_classes = list(dict.fromkeys(yolo_classes + ov_classes))
     labels_xml = "\n    ".join(f'<Label value="{c}"/>' for c in all_classes)
@@ -83,10 +64,6 @@ def build_label_config(yolo_classes: list[str], ov_classes: list[str]) -> str:
         "</View>"
     )
 
-
-# ---------------------------------------------------------------------------
-# Label Studio API client (email/password + CSRF session auth)
-# ---------------------------------------------------------------------------
 
 class LSClient:
     def __init__(self, url: str, email: str, password: str):
@@ -173,10 +150,6 @@ def _mime(p: Path) -> str:
             "bmp": "image/bmp", "webp": "image/webp"}.get(ext.lstrip("."), "image/jpeg")
 
 
-# ---------------------------------------------------------------------------
-# Inference
-# ---------------------------------------------------------------------------
-
 def run_predictions(
     image_path: Path,
     yolo_classes: list[str],
@@ -207,10 +180,6 @@ def run_predictions(
     score = sum(r["score"] for r in results) / len(results) if results else 0.0
     return results, score, len(yolo_dets), len(ov_dets)
 
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(
