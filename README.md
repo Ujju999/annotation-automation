@@ -86,7 +86,7 @@ pip install -e .
 .venv/bin/osam pull sam3
 ```
 
-This downloads ~300 MB once; subsequent runs reuse the cached weights.
+This downloads ~3.3 GB once; subsequent runs reuse the cached weights.
 
 ### 4. Install Label Studio (separate venv — its deps conflict)
 

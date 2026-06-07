@@ -69,7 +69,7 @@ _SESSIONS: dict = {}
 
 def _get_sessions() -> dict:
     if not _SESSIONS:
-        _SESSIONS["sam3"] = Sam3Session(
+        _SESSIONS["open_vocab"] = Sam3Session(
             model_name=os.getenv("OSAM_MODEL", "sam3"),
             cache_size=int(os.getenv("EMBEDDING_CACHE_SIZE", "10")),
         )
@@ -102,10 +102,10 @@ class AnnotationBackend(LabelStudioMLBase):
         sessions = _get_sessions()
         routes = build_routes(self.parsed_label_config, sessions["yolo_classes"])
         yolo_labels = labels_for(routes, "yolo")
-        sam3_labels = labels_for(routes, "sam3")
+        ov_labels = labels_for(routes, "open_vocab")
 
         yolo_conf = float(os.getenv("YOLO_SCORE_THRESHOLD", "0.3"))
-        sam3_conf = float(os.getenv("SAM3_SCORE_THRESHOLD", "0.1"))
+        ov_conf = float(os.getenv("SAM3_SCORE_THRESHOLD", "0.1"))
         iou = float(os.getenv("IOU_THRESHOLD", "0.5"))
         max_det = int(os.getenv("MAX_DETECTIONS", "100"))
         model_version = self.get("model_version") or os.getenv("MODEL_VERSION", "yolo+sam3-v1")
@@ -118,10 +118,10 @@ class AnnotationBackend(LabelStudioMLBase):
             dets = []
             if yolo_labels and sessions["yolo"] is not None:
                 dets += sessions["yolo"].predict(image_pil, yolo_labels, yolo_conf, iou)
-            if sam3_labels:
+            if ov_labels:
                 image_np = np.asarray(image_pil)
-                dets += sessions["sam3"].predict(
-                    image_np, self._image_id(task), sam3_labels, sam3_conf, iou, max_det)
+                dets += sessions["open_vocab"].predict(
+                    image_np, self._image_id(task), ov_labels, ov_conf, iou, max_det)
 
             results = [detection_to_result(d, c, W, H)
                        for d in dets for c in controls_for(routes, d.label)]
