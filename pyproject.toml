@@ -31,6 +31,8 @@ dependencies = [
 test = ["pytest>=7"]
 # Legacy osam/SAM3 open-vocab backend (CPU-only). Opt-in: pip install ".[osam]"
 osam = ["osam>=0.4.0"]
+# YOLO-World open-vocab backend. Needs CLIP for set_classes (ultralytics is already core).
+yolo_world = ["clip @ git+https://github.com/ultralytics/CLIP.git"]
 
 [tool.setuptools]
 packages = ["backend"]
