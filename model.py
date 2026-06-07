@@ -65,6 +65,11 @@ logger = logging.getLogger(__name__)
 _SESSIONS: dict = {}
 
 
+def _default_model_version() -> str:
+    """Backend-aware version label shown on predictions, e.g. 'yolo+gdino-v1'."""
+    return f"yolo+{os.getenv('OPEN_VOCAB_BACKEND', 'gdino')}-v1"
+
+
 def _get_sessions() -> dict:
     if not _SESSIONS:
         # Open-vocab backend selected by OPEN_VOCAB_BACKEND (default gdino). The factory
@@ -100,7 +105,7 @@ def _get_sessions() -> dict:
 class AnnotationBackend(LabelStudioMLBase):
 
     def setup(self):
-        self.set("model_version", os.getenv("MODEL_VERSION", "yolo+sam3-v1"))
+        self.set("model_version", os.getenv("MODEL_VERSION", _default_model_version()))
 
     def predict(self, tasks, context=None, **kwargs):
         sessions = _get_sessions()
@@ -112,7 +117,7 @@ class AnnotationBackend(LabelStudioMLBase):
         ov_conf = float(os.getenv("SAM3_SCORE_THRESHOLD", "0.1"))
         iou = float(os.getenv("IOU_THRESHOLD", "0.5"))
         max_det = int(os.getenv("MAX_DETECTIONS", "100"))
-        model_version = self.get("model_version") or os.getenv("MODEL_VERSION", "yolo+sam3-v1")
+        model_version = self.get("model_version") or os.getenv("MODEL_VERSION", _default_model_version())
 
         predictions = []
         for task in tasks:
