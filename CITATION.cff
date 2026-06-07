@@ -1,12 +1,13 @@
 cff-version: 1.2.0
 message: "If you use this software in your research, please cite it using the metadata below."
 type: software
-title: "annotation-automation: YOLO + SAM3 hybrid Label Studio ML backend"
+title: "annotation-automation: YOLO + open-vocabulary hybrid Label Studio ML backend"
 abstract: >
   A Label Studio ML backend that pre-annotates images using a hybrid of a
-  custom-trained YOLO model and SAM3 (via osam). YOLO handles trained classes;
-  SAM3 handles any new class via open-vocabulary text prompts — no training
-  required. The routing is fully dynamic and label-config-aware.
+  custom-trained YOLO model and a pluggable open-vocabulary backend (default
+  Grounding DINO; also Grounded SAM 2, YOLO-World, or legacy osam/SAM3). YOLO
+  handles trained classes; the open-vocab backend handles any new class via
+  text prompts — no training required. Routing is dynamic and label-config-aware.
 authors:
   - family-names: Singh
     given-names: Ujjawalpratap
@@ -20,7 +21,9 @@ keywords:
   - annotation
   - label-studio
   - yolo
-  - sam3
+  - grounding-dino
+  - sam2
+  - open-vocabulary-detection
   - machine-learning
   - computer-vision
   - active-learning
