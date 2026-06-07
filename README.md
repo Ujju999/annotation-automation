@@ -377,6 +377,35 @@ annotation-automation/
 
 ---
 
+## Contributing
+
+Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) first —
+it covers the bug report format, PR process, and code style.
+
+First-time contributors must sign the [Contributor License Agreement](CLA.md) by
+adding one sentence to their pull request (details in both files).
+
+---
+
+## Citation
+
+If you use this project in research or build on it in a publication, please cite it:
+
+```bibtex
+@software{singh2026annotationautomation,
+  author  = {Singh, Ujjawalpratap},
+  title   = {annotation-automation: {YOLO} + {SAM3} hybrid {Label Studio} {ML} backend},
+  year    = {2026},
+  url     = {https://github.com/Ujju999/annotation-automation},
+  license = {AGPL-3.0}
+}
+```
+
+A [CITATION.cff](CITATION.cff) file is also included — GitHub renders it as a
+**"Cite this repository"** button on the repo homepage.
+
+---
+
 ## License
 
 This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)** — see [LICENSE](LICENSE).
