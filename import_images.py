@@ -19,7 +19,7 @@ except ImportError:
 
 from backend.converters import Detection, detection_to_result
 from backend.open_vocab import OpenVocabSession, create_session
-from backend.routing import RECT, Control
+from backend.routing import RECT, POLY, Control
 
 logging.basicConfig(level=logging.WARNING, format="%(message)s")
 
@@ -52,15 +52,51 @@ def prompt_classes(yolo_path: Optional[str]) -> tuple[list[str], list[str]]:
     return yolo_classes, ov_extra
 
 
-def build_label_config(yolo_classes: list[str], ov_classes: list[str]) -> str:
+def prompt_project_name(default: str) -> str:
+    """Ask for the Label Studio project name, falling back to `default` on blank."""
+    raw = input(f"\nProject name [{default}]: ").strip()
+    return raw or default
+
+
+def prompt_shape() -> str:
+    """Ask for the annotation shape.  Returns RECT or POLY."""
+    raw = input("\nAnnotation shape — [b]ox or [p]olygon? [box]: ").strip().lower()
+    return POLY if raw in ("p", "poly", "polygon") else RECT
+
+
+def prompt_recursive() -> bool:
+    """Ask whether to scan subfolders for images."""
+    raw = input("Include images in subfolders? [y/N]: ").strip().lower()
+    return raw in ("y", "yes")
+
+
+def prompt_float(label: str, default: float) -> float:
+    """Ask for a numeric value, falling back to `default` on blank/invalid input."""
+    raw = input(f"{label} [{default}]: ").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        print(f"  '{raw}' is not a number — using {default}.")
+        return default
+
+
+def collect_images(images_dir: Path, recursive: bool) -> list[Path]:
+    """Gather image files from a folder, optionally recursing into subfolders."""
+    it = images_dir.rglob("*") if recursive else images_dir.iterdir()
+    return sorted(p for p in it if p.is_file() and p.suffix.lower() in IMAGE_EXTS)
+
+
+def build_label_config(yolo_classes: list[str], ov_classes: list[str], shape: str = RECT) -> str:
     all_classes = list(dict.fromkeys(yolo_classes + ov_classes))
     labels_xml = "\n    ".join(f'<Label value="{c}"/>' for c in all_classes)
     return (
         "<View>\n"
         '  <Image name="img" value="$image"/>\n'
-        '  <RectangleLabels name="label" toName="img">\n'
+        f'  <{shape} name="label" toName="img">\n'
         f"    {labels_xml}\n"
-        "  </RectangleLabels>\n"
+        f"  </{shape}>\n"
         "</View>"
     )
 
@@ -104,6 +140,18 @@ class LSClient:
         project_id = r.json()["id"]
         print(f"Created project '{name}'  →  {self.url}/projects/{project_id}/")
         return project_id
+
+    def find_project(self, name: str) -> Optional[int]:
+        """Return the id of an existing project whose title exactly matches, else None."""
+        r = self._s.get(f"{self.url}/api/projects",
+                        params={"page_size": 1000}, timeout=15)
+        r.raise_for_status()
+        payload = r.json()
+        projects = payload.get("results", []) if isinstance(payload, dict) else payload
+        for p in projects:
+            if p.get("title") == name:
+                return p["id"]
+        return None
 
     def upload_image(self, project_id: int, image_path: Path) -> Optional[int]:
         """Upload one image file and return its LS task_id."""
@@ -160,11 +208,12 @@ def run_predictions(
     ov_conf: float,
     iou: float,
     max_det: int,
+    shape: str = RECT,
 ) -> tuple[list[dict], float, int, int]:
     """Return (ls_results, avg_score, n_yolo, n_ov)."""
     image_pil = PIL.Image.open(image_path).convert("RGB")
     W, H = image_pil.size
-    control = Control(from_name="label", to_name="img", type=RECT)
+    control = Control(from_name="label", to_name="img", type=shape)
 
     yolo_dets: list[Detection] = []
     ov_dets: list[Detection] = []
@@ -191,15 +240,15 @@ def main():
                         help='Project name (default: "Annotation YYYY-MM-DD HH:MM")')
     parser.add_argument("--yolo", default=None, metavar="PATH",
                         help="Path to YOLO .pt file (overrides YOLO_MODEL_PATH in .env)")
+    parser.add_argument("--shape", choices=["box", "polygon"], default=None,
+                        help="Annotation shape (default: ask interactively)")
+    parser.add_argument("--recursive", action=argparse.BooleanOptionalAction, default=None,
+                        help="Scan subfolders for images (default: ask interactively)")
     args = parser.parse_args()
 
     images_dir = Path(args.images)
     if not images_dir.is_dir():
         sys.exit(f"Error: '{images_dir}' is not a directory.")
-
-    image_files = sorted(p for p in images_dir.iterdir() if p.suffix.lower() in IMAGE_EXTS)
-    if not image_files:
-        sys.exit(f"No images found in '{images_dir}'. Supported: {', '.join(IMAGE_EXTS)}")
 
     ls_url   = os.getenv("LABEL_STUDIO_URL", "http://localhost:8080")
     ls_email = os.getenv("LABEL_STUDIO_EMAIL", "").strip()
@@ -213,25 +262,47 @@ def main():
         )
 
     yolo_path = args.yolo or os.getenv("YOLO_MODEL_PATH", "").strip() or None
+    backend = os.getenv("OPEN_VOCAB_BACKEND", "gdino")
 
-    # --- interactive class prompting ---
+    # --- interactive prompts ---
     yolo_classes, ov_classes = prompt_classes(yolo_path)
-
     all_class_names = list(dict.fromkeys(yolo_classes + ov_classes))
     if not all_class_names:
         sys.exit("No classes entered. Nothing to annotate.")
 
-    label_config = build_label_config(yolo_classes, ov_classes)
-    project_name = args.project or f"Annotation {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    default_name = f"Annotation {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    project_name = args.project or prompt_project_name(default_name)
 
-    backend = os.getenv("OPEN_VOCAB_BACKEND", "gdino")
-    print(f"\nProject:  {project_name}")
-    print(f"Classes:  {', '.join(all_class_names)}")
-    print(f"Images:   {len(image_files)} files in {images_dir}")
+    shape = {"box": RECT, "polygon": POLY}[args.shape] if args.shape else prompt_shape()
+    if shape == POLY:
+        print("  Note: polygons need a mask-capable backend (sam3 / grounded_sam2);\n"
+              "  box-only backends fall back to box-shaped polygons.")
+
+    recursive = args.recursive if args.recursive is not None else prompt_recursive()
+    image_files = collect_images(images_dir, recursive)
+    if not image_files:
+        hint = "or its subfolders" if recursive else "top level only — try --recursive"
+        sys.exit(f"No images found in '{images_dir}' ({hint}). "
+                 f"Supported: {', '.join(sorted(IMAGE_EXTS))}")
+
+    yolo_conf = float(os.getenv("YOLO_SCORE_THRESHOLD", "0.3"))
+    ov_conf   = float(os.getenv("SAM3_SCORE_THRESHOLD", "0.1"))
     if yolo_classes:
-        print(f"  YOLO → {', '.join(yolo_classes)}")
+        yolo_conf = prompt_float("YOLO confidence threshold", yolo_conf)
     if ov_classes:
-        print(f"  {backend} → {', '.join(ov_classes)}")
+        ov_conf = prompt_float(f"'{backend}' confidence threshold", ov_conf)
+
+    label_config = build_label_config(yolo_classes, ov_classes, shape)
+
+    # --- summary ---
+    print(f"\nProject:  {project_name}")
+    print(f"Shape:    {'polygon' if shape == POLY else 'box'}")
+    print(f"Classes:  {', '.join(all_class_names)}")
+    print(f"Images:   {len(image_files)} files in {images_dir}{' (recursive)' if recursive else ''}")
+    if yolo_classes:
+        print(f"  YOLO → {', '.join(yolo_classes)}  (conf ≥ {yolo_conf})")
+    if ov_classes:
+        print(f"  {backend} → {', '.join(ov_classes)}  (conf ≥ {ov_conf})")
     print()
     ans = input("Proceed? [Y/n] ").strip().lower()
     if ans == "n":
@@ -243,7 +314,20 @@ def main():
     except Exception as exc:
         sys.exit(f"Cannot connect to Label Studio at {ls_url}: {exc}")
 
-    project_id = client.create_project(project_name, label_config)
+    # --- create or reuse the project ---
+    existing = client.find_project(project_name)
+    if existing is not None:
+        print(f"\nA project named '{project_name}' already exists (id {existing}).")
+        choice = input("  [R]euse (add these images) / [C]reate a new one / [A]bort? [R]: ").strip().lower()
+        if choice == "a":
+            sys.exit("Aborted.")
+        if choice.startswith("c"):
+            project_id = client.create_project(project_name, label_config)
+        else:
+            project_id = existing
+            print(f"Reusing project {existing} — keeping its labeling config; new images will be added.")
+    else:
+        project_id = client.create_project(project_name, label_config)
 
     # --- init model sessions ---
     yolo_session = None
@@ -268,8 +352,6 @@ def main():
             cache_size=int(os.getenv("EMBEDDING_CACHE_SIZE", "10")),
         )
 
-    yolo_conf  = float(os.getenv("YOLO_SCORE_THRESHOLD", "0.3"))
-    ov_conf    = float(os.getenv("SAM3_SCORE_THRESHOLD", "0.1"))
     iou        = float(os.getenv("IOU_THRESHOLD", "0.5"))
     max_det    = int(os.getenv("MAX_DETECTIONS", "100"))
     model_ver  = os.getenv("MODEL_VERSION") or f"yolo+{backend}-v1"
@@ -291,6 +373,7 @@ def main():
                 img_path, yolo_classes, ov_classes,
                 yolo_session, ov_session,
                 yolo_conf, ov_conf, iou, max_det,
+                shape=shape,
             )
 
             if results:
