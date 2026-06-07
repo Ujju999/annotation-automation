@@ -1,7 +1,3 @@
-"""Control-tag-aware routing: map each project label to its control tag and engine.
-
-Pure standard-library module (no torch/ultralytics/osam) so it stays unit-testable.
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -24,14 +20,14 @@ class Control:
 class LabelRoute:
     label: str
     control: Control
-    engine: str      # "yolo" | "sam3"
+    engine: str      # "yolo" | "open_vocab"
 
 
 def build_routes(parsed_label_config: dict, yolo_classes: set) -> List[LabelRoute]:
     """Turn ``self.parsed_label_config`` into per-label routes.
 
     A label's engine is decided purely by membership in ``yolo_classes`` — anything
-    the YOLO model doesn't know goes to the open-vocab (sam3) engine.
+    the YOLO model doesn't know goes to the open-vocab engine.
     """
     routes: List[LabelRoute] = []
     for from_name, info in parsed_label_config.items():
@@ -40,7 +36,7 @@ def build_routes(parsed_label_config: dict, yolo_classes: set) -> List[LabelRout
         to_name = (info.get("to_name") or [""])[0]
         control = Control(from_name=from_name, to_name=to_name, type=info["type"])
         for label in info.get("labels", []):
-            engine = "yolo" if label in yolo_classes else "sam3"
+            engine = "yolo" if label in yolo_classes else "open_vocab"
             routes.append(LabelRoute(label=label, control=control, engine=engine))
     return routes
 

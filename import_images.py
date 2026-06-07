@@ -1,18 +1,6 @@
-#!/usr/bin/env python3
-"""
-CLI — Create a Label Studio project, upload images, run YOLO+SAM3 predictions,
-and push bounding-box pre-annotations so annotators only need to review.
-
-Usage:
-    python import_images.py --images /path/to/folder
-    python import_images.py --images /path/to/folder --project "Drone v2" --yolo best.pt
-
-Reads LABEL_STUDIO_URL and LABEL_STUDIO_API_KEY from .env (auto-loaded).
-"""
 from __future__ import annotations
 
 import argparse
-import hashlib
 import logging
 import os
 import sys
@@ -20,7 +8,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-import numpy as np
 import PIL.Image
 import requests
 
@@ -31,7 +18,7 @@ except ImportError:
     pass
 
 from backend.converters import Detection, detection_to_result
-from backend.model_sam3 import Sam3Session
+from backend.open_vocab import OpenVocabSession, create_session
 from backend.routing import RECT, Control
 
 logging.basicConfig(level=logging.WARNING, format="%(message)s")
@@ -39,12 +26,8 @@ logging.basicConfig(level=logging.WARNING, format="%(message)s")
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff", ".tif"}
 
 
-# ---------------------------------------------------------------------------
-# Interactive class selection
-# ---------------------------------------------------------------------------
-
 def prompt_classes(yolo_path: Optional[str]) -> tuple[list[str], list[str]]:
-    """Ask the user which classes to annotate.  Returns (yolo_classes, sam3_classes)."""
+    """Ask the user which classes to annotate.  Returns (yolo_classes, ov_classes)."""
     yolo_classes: list[str] = []
 
     if yolo_path and Path(yolo_path).exists():
@@ -56,25 +39,21 @@ def prompt_classes(yolo_path: Optional[str]) -> tuple[list[str], list[str]]:
         for i, name in enumerate(yolo_classes):
             print(f"  {i}: {name}")
         print()
-        raw = input("Add extra classes for SAM3 open-vocab detection\n"
+        raw = input("Add extra classes for open-vocab detection\n"
                     "(comma-separated, blank to skip): ").strip()
     else:
         if yolo_path:
-            print(f"\nNo YOLO model found at '{yolo_path}' — using SAM3-only.")
+            print(f"\nNo YOLO model found at '{yolo_path}' — using the open-vocab backend only.")
         else:
-            print("\nNo YOLO model — using SAM3 open-vocab for all classes.")
+            print("\nNo YOLO model — using the open-vocab backend for all classes.")
         raw = input("Enter class names (comma-separated, e.g. drone,person,car): ").strip()
 
-    sam3_extra = [c.strip() for c in raw.split(",") if c.strip()] if raw else []
-    return yolo_classes, sam3_extra
+    ov_extra = [c.strip() for c in raw.split(",") if c.strip()] if raw else []
+    return yolo_classes, ov_extra
 
 
-# ---------------------------------------------------------------------------
-# Label config builder
-# ---------------------------------------------------------------------------
-
-def build_label_config(yolo_classes: list[str], sam3_classes: list[str]) -> str:
-    all_classes = list(dict.fromkeys(yolo_classes + sam3_classes))
+def build_label_config(yolo_classes: list[str], ov_classes: list[str]) -> str:
+    all_classes = list(dict.fromkeys(yolo_classes + ov_classes))
     labels_xml = "\n    ".join(f'<Label value="{c}"/>' for c in all_classes)
     return (
         "<View>\n"
@@ -85,10 +64,6 @@ def build_label_config(yolo_classes: list[str], sam3_classes: list[str]) -> str:
         "</View>"
     )
 
-
-# ---------------------------------------------------------------------------
-# Label Studio API client (email/password + CSRF session auth)
-# ---------------------------------------------------------------------------
 
 class LSClient:
     def __init__(self, url: str, email: str, password: str):
@@ -175,50 +150,40 @@ def _mime(p: Path) -> str:
             "bmp": "image/bmp", "webp": "image/webp"}.get(ext.lstrip("."), "image/jpeg")
 
 
-# ---------------------------------------------------------------------------
-# Inference
-# ---------------------------------------------------------------------------
-
 def run_predictions(
     image_path: Path,
     yolo_classes: list[str],
-    sam3_classes: list[str],
+    ov_classes: list[str],
     yolo_session,
-    sam3_session: Optional[Sam3Session],
+    ov_session: Optional[OpenVocabSession],
     yolo_conf: float,
-    sam3_conf: float,
+    ov_conf: float,
     iou: float,
     max_det: int,
 ) -> tuple[list[dict], float, int, int]:
-    """Return (ls_results, avg_score, n_yolo, n_sam3)."""
+    """Return (ls_results, avg_score, n_yolo, n_ov)."""
     image_pil = PIL.Image.open(image_path).convert("RGB")
     W, H = image_pil.size
     control = Control(from_name="label", to_name="img", type=RECT)
 
     yolo_dets: list[Detection] = []
-    sam3_dets: list[Detection] = []
+    ov_dets: list[Detection] = []
 
     if yolo_classes and yolo_session is not None:
         yolo_dets = yolo_session.predict(image_pil, yolo_classes, yolo_conf, iou)
 
-    if sam3_classes and sam3_session is not None:
-        image_np = np.asarray(image_pil)
-        image_id = hashlib.sha256(str(image_path.resolve()).encode()).hexdigest()
-        sam3_dets = sam3_session.predict(image_np, image_id, sam3_classes, sam3_conf, iou, max_det)
+    if ov_classes and ov_session is not None:
+        ov_dets = ov_session.predict(image_pil, ov_classes, ov_conf, iou, max_det)
 
-    all_dets = yolo_dets + sam3_dets
+    all_dets = yolo_dets + ov_dets
     results = [detection_to_result(d, control, W, H) for d in all_dets]
     score = sum(r["score"] for r in results) / len(results) if results else 0.0
-    return results, score, len(yolo_dets), len(sam3_dets)
+    return results, score, len(yolo_dets), len(ov_dets)
 
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Upload images to Label Studio and push YOLO+SAM3 bounding-box predictions."
+        description="Upload images to Label Studio and push YOLO + open-vocab bounding-box predictions."
     )
     parser.add_argument("--images", required=True, metavar="DIR",
                         help="Folder of images to process")
@@ -250,22 +215,23 @@ def main():
     yolo_path = args.yolo or os.getenv("YOLO_MODEL_PATH", "").strip() or None
 
     # --- interactive class prompting ---
-    yolo_classes, sam3_classes = prompt_classes(yolo_path)
+    yolo_classes, ov_classes = prompt_classes(yolo_path)
 
-    all_class_names = list(dict.fromkeys(yolo_classes + sam3_classes))
+    all_class_names = list(dict.fromkeys(yolo_classes + ov_classes))
     if not all_class_names:
         sys.exit("No classes entered. Nothing to annotate.")
 
-    label_config = build_label_config(yolo_classes, sam3_classes)
+    label_config = build_label_config(yolo_classes, ov_classes)
     project_name = args.project or f"Annotation {datetime.now().strftime('%Y-%m-%d %H:%M')}"
 
+    backend = os.getenv("OPEN_VOCAB_BACKEND", "gdino")
     print(f"\nProject:  {project_name}")
     print(f"Classes:  {', '.join(all_class_names)}")
     print(f"Images:   {len(image_files)} files in {images_dir}")
     if yolo_classes:
         print(f"  YOLO → {', '.join(yolo_classes)}")
-    if sam3_classes:
-        print(f"  SAM3 → {', '.join(sam3_classes)}")
+    if ov_classes:
+        print(f"  {backend} → {', '.join(ov_classes)}")
     print()
     ans = input("Proceed? [Y/n] ").strip().lower()
     if ans == "n":
@@ -290,19 +256,23 @@ def main():
             task=os.getenv("YOLO_TASK", "detect"),
         )
 
-    sam3_session = None
-    if sam3_classes:
-        print("Loading SAM3 session (first image will be slow while weights load)...")
-        sam3_session = Sam3Session(
+    ov_session = None
+    if ov_classes:
+        print(f"Loading open-vocab backend '{backend}' (first image may be slow while weights load)...")
+        from backend.device import get_device
+        ov_session = create_session(
+            backend,
+            device=get_device(),
+            model_id=os.getenv("GDINO_MODEL_ID", "IDEA-Research/grounding-dino-base"),
             model_name=os.getenv("OSAM_MODEL", "sam3"),
             cache_size=int(os.getenv("EMBEDDING_CACHE_SIZE", "10")),
         )
 
     yolo_conf  = float(os.getenv("YOLO_SCORE_THRESHOLD", "0.3"))
-    sam3_conf  = float(os.getenv("SAM3_SCORE_THRESHOLD", "0.1"))
+    ov_conf    = float(os.getenv("SAM3_SCORE_THRESHOLD", "0.1"))
     iou        = float(os.getenv("IOU_THRESHOLD", "0.5"))
     max_det    = int(os.getenv("MAX_DETECTIONS", "100"))
-    model_ver  = os.getenv("MODEL_VERSION", "yolo+sam3-v1")
+    model_ver  = os.getenv("MODEL_VERSION") or f"yolo+{backend}-v1"
 
     # --- process images ---
     print(f"\nProcessing {len(image_files)} images...\n")
@@ -317,10 +287,10 @@ def main():
                 skipped += 1
                 continue
 
-            results, score, n_yolo, n_sam3 = run_predictions(
-                img_path, yolo_classes, sam3_classes,
-                yolo_session, sam3_session,
-                yolo_conf, sam3_conf, iou, max_det,
+            results, score, n_yolo, n_ov = run_predictions(
+                img_path, yolo_classes, ov_classes,
+                yolo_session, ov_session,
+                yolo_conf, ov_conf, iou, max_det,
             )
 
             if results:
@@ -328,8 +298,8 @@ def main():
                 parts = []
                 if n_yolo:
                     parts.append(f"YOLO:{n_yolo}")
-                if n_sam3:
-                    parts.append(f"SAM3:{n_sam3}")
+                if n_ov:
+                    parts.append(f"{backend}:{n_ov}")
                 detail = f"  ({', '.join(parts)})" if parts else ""
                 print(f"  {tag}  →  {len(results)} boxes  score={score:.2f}{detail}  ✓")
                 ok += 1
