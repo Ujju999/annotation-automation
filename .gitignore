@@ -18,5 +18,11 @@ venv/
 *.onnx
 *.onnx.data
 
+# Runtime / generated
+cache.db
+
+# Internal planning docs
+plan.md
+
 # OS
 .DS_Store
