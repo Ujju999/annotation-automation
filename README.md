@@ -190,18 +190,29 @@ source ~/.ls-venv/bin/activate && label-studio start
 .venv/bin/python import_images.py --images /path/to/your/images
 ```
 
-The CLI prompts for classes interactively:
+The CLI prompts interactively (anything you pass as a flag — e.g. `--project`,
+`--shape`, `--recursive` — skips the matching prompt):
 
 ```
 No YOLO model — using the open-vocab backend for all classes.
 Enter class names (comma-separated, e.g. drone,person,car): drone
 
-Project:  Annotation 2026-06-07 14:30
+Project name [Annotation 2026-06-07 14:30]: Drone dataset v1
+Annotation shape — [b]ox or [p]olygon? [box]: box
+Include images in subfolders? [y/N]: n
+'gdino' confidence threshold [0.1]: 0.1
+
+Project:  Drone dataset v1
+Shape:    box
 Classes:  drone
 Images:   12 files in /path/to/your/images
+  gdino → drone  (conf ≥ 0.1)
 
 Proceed? [Y/n]
 ```
+
+If a project with that name already exists, it asks whether to **reuse** it
+(add these images) or **create** a new one.
 
 After confirming:
 
