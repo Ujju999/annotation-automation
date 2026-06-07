@@ -2,7 +2,6 @@
 # Install torch separately first (see Dockerfiles / README) to pick cuda|mps|cpu.
 # Modern SDK from git (PyPI label-studio-ml is the abandoned legacy 1.0.9 fork)
 label-studio-ml @ git+https://github.com/HumanSignal/label-studio-ml-backend.git
-osam>=0.4.0
 transformers>=4.51
 ultralytics>=8.0
 numpy>=1.24

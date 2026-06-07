@@ -7,11 +7,9 @@ Detection MVP: known classes -> YOLO boxes, unknown classes -> SAM3 boxes (via
 bounding_box). Segmentation (PolygonLabels / BrushLabels) is additive later — the
 converter already routes geometry by control tag.
 """
-import hashlib
 import logging
 import os
 
-import numpy as np
 import PIL.Image
 
 # Load .env early so env vars are available before any os.getenv() below.
@@ -56,7 +54,7 @@ from label_studio_ml.model import LabelStudioMLBase
 
 from backend.converters import detection_to_result
 from backend.device import get_device
-from backend.model_sam3 import Sam3Session
+from backend.open_vocab import create_session
 from backend.model_yolo import YoloSession
 from backend.routing import SUPPORTED, build_routes, controls_for, labels_for
 
@@ -69,12 +67,18 @@ _SESSIONS: dict = {}
 
 def _get_sessions() -> dict:
     if not _SESSIONS:
-        _SESSIONS["open_vocab"] = Sam3Session(
+        # Open-vocab backend selected by OPEN_VOCAB_BACKEND (default gdino). The factory
+        # drops kwargs a given backend doesn't accept, so this one uniform set works for
+        # all of them (gdino uses device/model_id; osam uses model_name/cache_size).
+        _SESSIONS["open_vocab"] = create_session(
+            os.getenv("OPEN_VOCAB_BACKEND", "gdino"),
+            device=get_device(),
+            model_id=os.getenv("GDINO_MODEL_ID", "IDEA-Research/grounding-dino-base"),
             model_name=os.getenv("OSAM_MODEL", "sam3"),
             cache_size=int(os.getenv("EMBEDDING_CACHE_SIZE", "10")),
         )
-        # YOLO is OPTIONAL. With no model file, every label is "unknown" and routes
-        # to SAM3 (open-vocab text prompts) — so you can annotate without training.
+        # YOLO is OPTIONAL. With no model file, every label is "unknown" and routes to
+        # the open-vocab backend (text prompts) — so you can annotate without training.
         model_path = os.getenv("YOLO_MODEL_PATH", "").strip()
         if model_path and os.path.exists(model_path):
             _SESSIONS["yolo"] = YoloSession(
@@ -87,8 +91,8 @@ def _get_sessions() -> dict:
             _SESSIONS["yolo"] = None
             _SESSIONS["yolo_classes"] = set()
             logger.warning(
-                "No YOLO model at YOLO_MODEL_PATH=%r — running SAM3-only; all labels "
-                "are routed to open-vocab text prompts.", model_path,
+                "No YOLO model at YOLO_MODEL_PATH=%r — all labels are routed to the "
+                "open-vocab backend (text prompts).", model_path,
             )
     return _SESSIONS
 
@@ -119,9 +123,8 @@ class AnnotationBackend(LabelStudioMLBase):
             if yolo_labels and sessions["yolo"] is not None:
                 dets += sessions["yolo"].predict(image_pil, yolo_labels, yolo_conf, iou)
             if ov_labels:
-                image_np = np.asarray(image_pil)
                 dets += sessions["open_vocab"].predict(
-                    image_np, self._image_id(task), ov_labels, ov_conf, iou, max_det)
+                    image_pil, ov_labels, ov_conf, iou, max_det)
 
             results = [detection_to_result(d, c, W, H)
                        for d in dets for c in controls_for(routes, d.label)]
@@ -165,7 +168,3 @@ class AnnotationBackend(LabelStudioMLBase):
         tmp.write(resp.content)
         tmp.close()
         return tmp.name
-
-    def _image_id(self, task) -> str:
-        url = task["data"][self._image_value_key()]
-        return hashlib.sha256(url.encode()).hexdigest()
