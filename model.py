@@ -14,14 +14,43 @@ import os
 import numpy as np
 import PIL.Image
 
-# Load .env early so LABEL_STUDIO_URL / LABEL_STUDIO_API_KEY / YOLO_MODEL_PATH etc. are
-# available before any os.getenv() below. Optional dependency — no-op if not installed.
+# Load .env early so env vars are available before any os.getenv() below.
 try:
     from dotenv import load_dotenv
-
     load_dotenv()
 except ImportError:
     pass
+
+# The SDK reads LABEL_STUDIO_URL + LABEL_STUDIO_API_KEY for get_local_path().
+# We authenticate via email/password (LABEL_STUDIO_EMAIL / LABEL_STUDIO_PASSWORD)
+# and obtain a session token to satisfy the SDK's expectation.
+def _inject_api_key_from_credentials():
+    """If no API key is set, log in with email+password and set the env var."""
+    if os.getenv("LABEL_STUDIO_API_KEY", "").strip():
+        return
+    email = os.getenv("LABEL_STUDIO_EMAIL", "").strip()
+    password = os.getenv("LABEL_STUDIO_PASSWORD", "").strip()
+    url = os.getenv("LABEL_STUDIO_URL", "http://localhost:8080").rstrip("/")
+    if not email or not password:
+        return
+    try:
+        import requests
+        s = requests.Session()
+        s.get(f"{url}/user/login", timeout=5)
+        csrf = s.cookies.get("csrftoken", "")
+        s.post(f"{url}/user/login", data={"email": email, "password": password},
+               headers={"X-CSRFToken": csrf, "Referer": f"{url}/user/login"}, timeout=5)
+        r = s.get(f"{url}/api/users", timeout=5)
+        # Retrieve the user's token from the profile endpoint
+        r2 = s.get(f"{url}/api/current-user/reset-token/", timeout=5)
+        if r2.ok:
+            token = r2.json().get("token", "")
+            if token:
+                os.environ["LABEL_STUDIO_API_KEY"] = token
+    except Exception:
+        pass  # non-fatal: image URLs will fall back to direct download
+
+_inject_api_key_from_credentials()
 
 from label_studio_ml.model import LabelStudioMLBase
 

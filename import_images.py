@@ -1,0 +1,353 @@
+#!/usr/bin/env python3
+"""
+CLI — Create a Label Studio project, upload images, run YOLO+SAM3 predictions,
+and push bounding-box pre-annotations so annotators only need to review.
+
+Usage:
+    python import_images.py --images /path/to/folder
+    python import_images.py --images /path/to/folder --project "Drone v2" --yolo best.pt
+
+Reads LABEL_STUDIO_URL and LABEL_STUDIO_API_KEY from .env (auto-loaded).
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import logging
+import os
+import sys
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+import PIL.Image
+import requests
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+from backend.converters import Detection, detection_to_result
+from backend.model_sam3 import Sam3Session
+from backend.routing import RECT, Control
+
+logging.basicConfig(level=logging.WARNING, format="%(message)s")
+
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff", ".tif"}
+
+
+# ---------------------------------------------------------------------------
+# Interactive class selection
+# ---------------------------------------------------------------------------
+
+def prompt_classes(yolo_path: Optional[str]) -> tuple[list[str], list[str]]:
+    """Ask the user which classes to annotate.  Returns (yolo_classes, sam3_classes)."""
+    yolo_classes: list[str] = []
+
+    if yolo_path and Path(yolo_path).exists():
+        from ultralytics import YOLO
+        print(f"\nLoading YOLO model: {yolo_path}")
+        m = YOLO(yolo_path)
+        yolo_classes = [m.names[i] for i in sorted(m.names)]
+        print("\nDetected YOLO classes:")
+        for i, name in enumerate(yolo_classes):
+            print(f"  {i}: {name}")
+        print()
+        raw = input("Add extra classes for SAM3 open-vocab detection\n"
+                    "(comma-separated, blank to skip): ").strip()
+    else:
+        if yolo_path:
+            print(f"\nNo YOLO model found at '{yolo_path}' — using SAM3-only.")
+        else:
+            print("\nNo YOLO model — using SAM3 open-vocab for all classes.")
+        raw = input("Enter class names (comma-separated, e.g. drone,person,car): ").strip()
+
+    sam3_extra = [c.strip() for c in raw.split(",") if c.strip()] if raw else []
+    return yolo_classes, sam3_extra
+
+
+# ---------------------------------------------------------------------------
+# Label config builder
+# ---------------------------------------------------------------------------
+
+def build_label_config(yolo_classes: list[str], sam3_classes: list[str]) -> str:
+    all_classes = list(dict.fromkeys(yolo_classes + sam3_classes))
+    labels_xml = "\n    ".join(f'<Label value="{c}"/>' for c in all_classes)
+    return (
+        "<View>\n"
+        '  <Image name="img" value="$image"/>\n'
+        '  <RectangleLabels name="label" toName="img">\n'
+        f"    {labels_xml}\n"
+        "  </RectangleLabels>\n"
+        "</View>"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Label Studio API client (email/password + CSRF session auth)
+# ---------------------------------------------------------------------------
+
+class LSClient:
+    def __init__(self, url: str, email: str, password: str):
+        self.url = url.rstrip("/")
+        self._s = requests.Session()
+        self._login(email, password)
+
+    def _csrf(self) -> str:
+        return self._s.cookies.get("csrftoken", "")
+
+    def _login(self, email: str, password: str):
+        # Step 1: GET the login page to harvest the CSRF cookie
+        self._s.get(f"{self.url}/user/login", timeout=10)
+        # Step 2: POST credentials
+        r = self._s.post(f"{self.url}/user/login", data={
+            "email": email,
+            "password": password,
+        }, headers={"X-CSRFToken": self._csrf(), "Referer": f"{self.url}/user/login"},
+        timeout=10, allow_redirects=True)
+        # Verify login succeeded
+        me = self._s.get(f"{self.url}/api/current-user/whoami", timeout=10)
+        me.raise_for_status()
+        name = me.json().get("username") or me.json().get("email", "?")
+        print(f"Connected to Label Studio as: {name}")
+
+    def _post(self, path: str, **kwargs):
+        """POST with CSRF header automatically applied."""
+        headers = kwargs.pop("headers", {})
+        headers["X-CSRFToken"] = self._csrf()
+        return self._s.post(f"{self.url}{path}", headers=headers, **kwargs)
+
+    def create_project(self, name: str, label_config: str) -> int:
+        r = self._post("/api/projects", json={
+            "title": name,
+            "label_config": label_config,
+        }, timeout=15)
+        r.raise_for_status()
+        project_id = r.json()["id"]
+        print(f"Created project '{name}'  →  {self.url}/projects/{project_id}/")
+        return project_id
+
+    def upload_image(self, project_id: int, image_path: Path) -> Optional[int]:
+        """Upload one image file and return its LS task_id."""
+        with open(image_path, "rb") as fh:
+            r = self._post(
+                f"/api/projects/{project_id}/import",
+                files={"file": (image_path.name, fh, _mime(image_path))},
+                timeout=60,
+            )
+        r.raise_for_status()
+
+        # LS doesn't return task IDs from the import endpoint — query tasks sorted
+        # by newest and match by filename.
+        r2 = self._s.get(f"{self.url}/api/tasks", params={
+            "project": project_id,
+            "ordering": "-created_at",
+            "page_size": 10,
+        }, timeout=15)
+        r2.raise_for_status()
+        payload = r2.json()
+        tasks = payload if isinstance(payload, list) else payload.get("tasks", [])
+
+        stem = image_path.stem
+        for task in tasks:
+            for val in (task.get("data") or {}).values():
+                if isinstance(val, str) and stem in val:
+                    return task["id"]
+        # fallback: assume the newest task is ours
+        return tasks[0]["id"] if tasks else None
+
+    def push_prediction(self, task_id: int, results: list, score: float, model_version: str):
+        r = self._post("/api/predictions", json={
+            "task": task_id,
+            "result": results,
+            "score": round(score, 4),
+            "model_version": model_version,
+        }, timeout=15)
+        r.raise_for_status()
+
+
+def _mime(p: Path) -> str:
+    ext = p.suffix.lower()
+    return {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+            "bmp": "image/bmp", "webp": "image/webp"}.get(ext.lstrip("."), "image/jpeg")
+
+
+# ---------------------------------------------------------------------------
+# Inference
+# ---------------------------------------------------------------------------
+
+def run_predictions(
+    image_path: Path,
+    yolo_classes: list[str],
+    sam3_classes: list[str],
+    yolo_session,
+    sam3_session: Optional[Sam3Session],
+    yolo_conf: float,
+    sam3_conf: float,
+    iou: float,
+    max_det: int,
+) -> tuple[list[dict], float, int, int]:
+    """Return (ls_results, avg_score, n_yolo, n_sam3)."""
+    image_pil = PIL.Image.open(image_path).convert("RGB")
+    W, H = image_pil.size
+    control = Control(from_name="label", to_name="img", type=RECT)
+
+    yolo_dets: list[Detection] = []
+    sam3_dets: list[Detection] = []
+
+    if yolo_classes and yolo_session is not None:
+        yolo_dets = yolo_session.predict(image_pil, yolo_classes, yolo_conf, iou)
+
+    if sam3_classes and sam3_session is not None:
+        image_np = np.asarray(image_pil)
+        image_id = hashlib.sha256(str(image_path.resolve()).encode()).hexdigest()
+        sam3_dets = sam3_session.predict(image_np, image_id, sam3_classes, sam3_conf, iou, max_det)
+
+    all_dets = yolo_dets + sam3_dets
+    results = [detection_to_result(d, control, W, H) for d in all_dets]
+    score = sum(r["score"] for r in results) / len(results) if results else 0.0
+    return results, score, len(yolo_dets), len(sam3_dets)
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Upload images to Label Studio and push YOLO+SAM3 bounding-box predictions."
+    )
+    parser.add_argument("--images", required=True, metavar="DIR",
+                        help="Folder of images to process")
+    parser.add_argument("--project", default=None, metavar="NAME",
+                        help='Project name (default: "Annotation YYYY-MM-DD HH:MM")')
+    parser.add_argument("--yolo", default=None, metavar="PATH",
+                        help="Path to YOLO .pt file (overrides YOLO_MODEL_PATH in .env)")
+    args = parser.parse_args()
+
+    images_dir = Path(args.images)
+    if not images_dir.is_dir():
+        sys.exit(f"Error: '{images_dir}' is not a directory.")
+
+    image_files = sorted(p for p in images_dir.iterdir() if p.suffix.lower() in IMAGE_EXTS)
+    if not image_files:
+        sys.exit(f"No images found in '{images_dir}'. Supported: {', '.join(IMAGE_EXTS)}")
+
+    ls_url   = os.getenv("LABEL_STUDIO_URL", "http://localhost:8080")
+    ls_email = os.getenv("LABEL_STUDIO_EMAIL", "").strip()
+    ls_pass  = os.getenv("LABEL_STUDIO_PASSWORD", "").strip()
+    if not ls_email or not ls_pass:
+        sys.exit(
+            "Error: LABEL_STUDIO_EMAIL and LABEL_STUDIO_PASSWORD must be set in .env.\n"
+            "Example:\n"
+            "  LABEL_STUDIO_EMAIL=admin@example.com\n"
+            "  LABEL_STUDIO_PASSWORD=yourpassword"
+        )
+
+    yolo_path = args.yolo or os.getenv("YOLO_MODEL_PATH", "").strip() or None
+
+    # --- interactive class prompting ---
+    yolo_classes, sam3_classes = prompt_classes(yolo_path)
+
+    all_class_names = list(dict.fromkeys(yolo_classes + sam3_classes))
+    if not all_class_names:
+        sys.exit("No classes entered. Nothing to annotate.")
+
+    label_config = build_label_config(yolo_classes, sam3_classes)
+    project_name = args.project or f"Annotation {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+
+    print(f"\nProject:  {project_name}")
+    print(f"Classes:  {', '.join(all_class_names)}")
+    print(f"Images:   {len(image_files)} files in {images_dir}")
+    if yolo_classes:
+        print(f"  YOLO → {', '.join(yolo_classes)}")
+    if sam3_classes:
+        print(f"  SAM3 → {', '.join(sam3_classes)}")
+    print()
+    ans = input("Proceed? [Y/n] ").strip().lower()
+    if ans == "n":
+        sys.exit("Aborted.")
+
+    # --- connect to Label Studio ---
+    try:
+        client = LSClient(ls_url, ls_email, ls_pass)
+    except Exception as exc:
+        sys.exit(f"Cannot connect to Label Studio at {ls_url}: {exc}")
+
+    project_id = client.create_project(project_name, label_config)
+
+    # --- init model sessions ---
+    yolo_session = None
+    if yolo_classes and yolo_path and Path(yolo_path).exists():
+        from backend.model_yolo import YoloSession
+        from backend.device import get_device
+        yolo_session = YoloSession(
+            model_path=yolo_path,
+            device=get_device(),
+            task=os.getenv("YOLO_TASK", "detect"),
+        )
+
+    sam3_session = None
+    if sam3_classes:
+        print("Loading SAM3 session (first image will be slow while weights load)...")
+        sam3_session = Sam3Session(
+            model_name=os.getenv("OSAM_MODEL", "sam3"),
+            cache_size=int(os.getenv("EMBEDDING_CACHE_SIZE", "10")),
+        )
+
+    yolo_conf  = float(os.getenv("YOLO_SCORE_THRESHOLD", "0.3"))
+    sam3_conf  = float(os.getenv("SAM3_SCORE_THRESHOLD", "0.1"))
+    iou        = float(os.getenv("IOU_THRESHOLD", "0.5"))
+    max_det    = int(os.getenv("MAX_DETECTIONS", "100"))
+    model_ver  = os.getenv("MODEL_VERSION", "yolo+sam3-v1")
+
+    # --- process images ---
+    print(f"\nProcessing {len(image_files)} images...\n")
+    ok = skipped = errored = 0
+
+    for i, img_path in enumerate(image_files, 1):
+        tag = f"[{i}/{len(image_files)}] {img_path.name}"
+        try:
+            task_id = client.upload_image(project_id, img_path)
+            if task_id is None:
+                print(f"  {tag}  →  upload ok but task ID not found (skipped prediction)")
+                skipped += 1
+                continue
+
+            results, score, n_yolo, n_sam3 = run_predictions(
+                img_path, yolo_classes, sam3_classes,
+                yolo_session, sam3_session,
+                yolo_conf, sam3_conf, iou, max_det,
+            )
+
+            if results:
+                client.push_prediction(task_id, results, score, model_ver)
+                parts = []
+                if n_yolo:
+                    parts.append(f"YOLO:{n_yolo}")
+                if n_sam3:
+                    parts.append(f"SAM3:{n_sam3}")
+                detail = f"  ({', '.join(parts)})" if parts else ""
+                print(f"  {tag}  →  {len(results)} boxes  score={score:.2f}{detail}  ✓")
+                ok += 1
+            else:
+                print(f"  {tag}  →  no detections  (task created, no pre-annotation)")
+                skipped += 1
+
+        except KeyboardInterrupt:
+            print("\nInterrupted.")
+            break
+        except Exception as exc:
+            print(f"  {tag}  →  ERROR: {exc}")
+            errored += 1
+
+    print(f"\n{'─'*50}")
+    print(f"Done.  {ok} pre-annotated  |  {skipped} empty  |  {errored} errors")
+    print(f"Review at: {ls_url}/projects/{project_id}/")
+
+
+if __name__ == "__main__":
+    main()
